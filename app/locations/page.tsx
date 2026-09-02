@@ -1,0 +1,24 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { AdminPage } from "@/components/admin/AdminPage";
+import { createRecord, deleteRecord, listCollection, updateRecord } from "@/lib/firestore";
+import type { Location, LocationType } from "@/types/location";
+
+const empty={name:"",type:"rack" as LocationType,active:true,notes:""};
+
+export default function LocationsPage(){
+  const [locations,setLocations]=useState<Location[]>([]),[form,setForm]=useState(empty),[editing,setEditing]=useState<string|null>(null),[showForm,setShowForm]=useState(false),[error,setError]=useState(""),[loading,setLoading]=useState(true);
+  async function load(){setLoading(true);try{setLocations(await listCollection<Location>("locations"));setError("");}catch{setError("Unable to load locations. Check Firestore rules/indexes.");}finally{setLoading(false);}}
+  useEffect(()=>{void load();},[]);
+  function openCreate(){setEditing(null);setForm(empty);setShowForm(true);setError("");}
+  function openEdit(l:Location){setEditing(l.id);setForm({name:l.name,type:l.type,active:l.active,notes:l.notes??""});setShowForm(true);setError("");}
+  async function save(e:React.FormEvent){e.preventDefault();if(!form.name.trim())return setError("Location name is required.");try{if(editing)await updateRecord("locations",editing,form);else await createRecord("locations",form);setShowForm(false);setEditing(null);await load();}catch{setError("Unable to save location.");}}
+  async function remove(id:string){if(!confirm("Delete this location?"))return;try{await deleteRecord("locations",id);await load();}catch{setError("Unable to delete location.");}}
+  return <AdminPage><div className="container-fluid py-3">
+    <div className="d-flex justify-content-between align-items-start mb-3"><div><h1 className="h3 seedlings-brand mb-1">Locations</h1><p className="text-muted mb-0">Master list used when assigning growing batches to a rack, room or growing area.</p></div><button className="btn btn-success" onClick={openCreate}><i className="bi bi-plus-lg me-1"/>Add Location</button></div>
+    {error&&<div className="alert alert-danger">{error}</div>}
+    {showForm&&<div className="card border-success mb-3"><div className="card-header"><strong>{editing?"Edit Location":"Add Location"}</strong></div><form onSubmit={save}><div className="card-body"><div className="row g-3"><div className="col-md-5"><label className="form-label">Location name *</label><input className="form-control" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="e.g. Rack A" required/></div><div className="col-md-3"><label className="form-label">Type</label><select className="form-select" value={form.type} onChange={e=>setForm({...form,type:e.target.value as LocationType})}><option value="rack">Rack</option><option value="room">Room</option><option value="tray_area">Tray area</option><option value="storage">Storage</option><option value="other">Other</option></select></div><div className="col-md-4"><label className="form-label">Notes</label><input className="form-control" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/></div><div className="col-12"><div className="form-check"><input className="form-check-input" type="checkbox" id="loc-active" checked={form.active} onChange={e=>setForm({...form,active:e.target.checked})}/><label className="form-check-label" htmlFor="loc-active">Active</label></div></div></div></div><div className="card-footer d-flex justify-content-end gap-2"><button type="button" className="btn btn-secondary" onClick={()=>setShowForm(false)}>Cancel</button><button className="btn btn-success">{editing?"Update Location":"Create Location"}</button></div></form></div>}
+    <div className="card"><div className="card-header"><strong>Location Master</strong></div><div className="table-responsive"><table className="table table-hover align-middle mb-0"><thead><tr><th>Location</th><th>Type</th><th>Status</th><th>Notes</th><th className="text-end">Actions</th></tr></thead><tbody>{locations.map(l=><tr key={l.id}><td><strong>{l.name}</strong></td><td className="text-capitalize">{l.type.replace("_"," ")}</td><td><span className={`badge text-bg-${l.active?"success":"secondary"}`}>{l.active?"Active":"Inactive"}</span></td><td>{l.notes||"—"}</td><td className="text-end"><button className="btn btn-sm btn-outline-primary me-1" onClick={()=>openEdit(l)}>Edit</button><button className="btn btn-sm btn-outline-danger" onClick={()=>void remove(l.id)}>Delete</button></td></tr>)}{!locations.length&&!loading&&<tr><td colSpan={5} className="text-center text-muted py-5">No locations yet.</td></tr>}{loading&&<tr><td colSpan={5} className="text-center py-5"><span className="spinner-border spinner-border-sm me-2"/>Loading...</td></tr>}</tbody></table></div></div>
+  </div></AdminPage>;
+}

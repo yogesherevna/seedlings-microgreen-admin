@@ -1,0 +1,32 @@
+"use client";
+
+import {useEffect,useMemo,useState} from "react";
+import {AdminPage} from "@/components/admin/AdminPage";
+import {listCollection} from "@/lib/firestore";
+import type {Notification} from "@/types/operations";
+import type {GrowingBatch} from "@/types/growingBatch";
+import type {Product} from "@/types/catalog";
+import type {Subscription} from "@/types/subscription";
+import type {Order} from "@/types/order";
+
+function dateOf(v:unknown){if(!v)return"";if(typeof v==="string")return v.slice(0,10);if(typeof v==="object"&&v!==null&&"toDate"in v&&typeof(v as any).toDate==="function")return(v as any).toDate().toISOString().slice(0,10);return""}
+function daysUntil(date:string){if(!date)return null;return Math.ceil((new Date(`${date}T00:00:00`).getTime()-new Date(`${new Date().toISOString().slice(0,10)}T00:00:00`).getTime())/86400000)}
+export default function NotificationsPage(){
+ const[items,setItems]=useState<Notification[]>([]);const[products,setProducts]=useState<Product[]>([]);const[batches,setBatches]=useState<GrowingBatch[]>([]);const[subs,setSubs]=useState<Subscription[]>([]);const[orders,setOrders]=useState<Order[]>([]);
+ const[tab,setTab]=useState<"inbox"|"alerts">("inbox");const[search,setSearch]=useState("");const[filter,setFilter]=useState("all");const[loading,setLoading]=useState(true);const[error,setError]=useState("");
+ async function load(){setLoading(true);try{const[n,p,b,s,o]=await Promise.all([listCollection<Notification>("notifications","createdAt"),listCollection<Product>("products"),listCollection<GrowingBatch>("growingBatches","startDate"),listCollection<Subscription>("subscriptions"),listCollection<Order>("orders","createdAt")]);setItems(n);setProducts(p);setBatches(b);setSubs(s);setOrders(o);setError("")}catch{setError("Unable to load notification data.")}finally{setLoading(false)}}
+ useEffect(()=>{void load()},[]);
+ const alerts=useMemo(()=>{const a:{type:string;title:string;message:string;severity:"warning"|"info"|"danger"}[]=[];const today=new Date().toISOString().slice(0,10);
+  products.filter(p=>p.status!=="inactive"&&Number(p.stockGrams??p.stock??0)<=Number(p.lowStockThresholdGrams??p.lowStockThreshold??0)).forEach(p=>a.push({type:"low_stock",title:"Low stock",message:`${p.name} has ${(Number(p.stockGrams??p.stock??0)).toLocaleString()} g available.`,severity:"warning"}));
+  subs.filter(s=>s.status==="active"&&s.nextDeliveryDate&&daysUntil(s.nextDeliveryDate)!==null&&daysUntil(s.nextDeliveryDate)!==undefined&&daysUntil(s.nextDeliveryDate)!<=3&&daysUntil(s.nextDeliveryDate)!>=0).forEach(s=>a.push({type:"subscription_due",title:"Subscription due soon",message:`${s.subscriptionNumber} — ${s.customerName||"Customer"} — ${s.nextDeliveryDate}.`,severity:"info"}));
+  batches.forEach(b=>b.items.forEach(i=>{if(i.status!=="harvested"&&i.status!=="failed"&&i.expectedReadyDate&&i.expectedReadyDate<=today)a.push({type:"harvest_due",title:"Harvest due",message:`${b.batchNumber} — ${i.productName} is due for harvest.`,severity:"warning"})}));
+  orders.filter(o=>o.status==="pending_payment").forEach(o=>a.push({type:"order_status",title:"Order awaiting payment",message:`${o.orderNumber||o.id} — ${o.customerName||"Customer"}.`,severity:"info"}));
+  return a;
+ },[products,subs,batches,orders]);
+ const filtered=items.filter(n=>(filter==="all"||n.type===filter)&&(!search||[n.title,n.message,n.type,n.recipientEmail,n.recipientPhone].join(" ").toLowerCase().includes(search.toLowerCase())));
+ return <AdminPage><div className="container-fluid py-3"><div className="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3"><div><h1 className="h3 seedlings-brand mb-1">Notifications</h1><p className="text-muted mb-0">Operational alerts and notification history. Phase 1 uses in-app admin alerts.</p></div><button className="btn btn-outline-secondary" onClick={()=>void load()}><i className="bi bi-arrow-clockwise me-1"/>Refresh</button></div>
+ {error&&<div className="alert alert-danger">{error}</div>}
+ <ul className="nav nav-tabs mb-3"><li className="nav-item"><button className={`nav-link ${tab==="inbox"?"active":""}`} onClick={()=>setTab("inbox")}><i className="bi bi-bell me-1"/>History <span className="badge text-bg-secondary ms-1">{items.length}</span></button></li><li className="nav-item"><button className={`nav-link ${tab==="alerts"?"active":""}`} onClick={()=>setTab("alerts")}><i className="bi bi-exclamation-triangle me-1"/>Current Alerts <span className="badge text-bg-warning ms-1">{alerts.length}</span></button></li></ul>
+ {tab==="alerts"?<div className="row g-3">{alerts.map((a,i)=><div className="col-md-6 col-xl-4" key={`${a.type}-${i}`}><div className={`alert alert-${a.severity} h-100 mb-0`}><strong><i className="bi bi-bell me-1"/>{a.title}</strong><div className="small mt-1">{a.message}</div></div></div>)}{!alerts.length&&<div className="col-12"><div className="card"><div className="card-body text-center text-muted py-5">No current alerts.</div></div></div>}</div>:
+ <div className="card"><div className="card-header"><div className="row g-2 align-items-center"><div className="col-md-6"><div className="input-group"><span className="input-group-text"><i className="bi bi-search"/></span><input className="form-control" placeholder="Search notifications..." value={search} onChange={e=>setSearch(e.target.value)}/></div></div><div className="col-md-3"><select className="form-select" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All types</option><option value="order_created">New order</option><option value="order_status">Order status</option><option value="delivery_assigned">Delivery assigned</option><option value="low_stock">Low stock</option><option value="system">System</option></select></div></div></div><div className="table-responsive"><table className="table table-hover align-middle mb-0"><thead><tr><th>Notification</th><th>Type</th><th>Channel</th><th>Status</th><th>Created</th></tr></thead><tbody>{filtered.map(n=><tr key={n.id}><td><strong>{n.title}</strong><div className="small text-muted">{n.message}</div></td><td>{n.type}</td><td>{n.channel}</td><td><span className="badge text-bg-secondary">{n.status}</span></td><td>{dateOf(n.createdAt)||"—"}</td></tr>)}{!filtered.length&&!loading&&<tr><td colSpan={5} className="text-center text-muted py-5">No notification history.</td></tr>}{loading&&<tr><td colSpan={5} className="text-center py-5"><span className="spinner-border spinner-border-sm me-2"/>Loading...</td></tr>}</tbody></table></div></div>}</div></AdminPage>
+}

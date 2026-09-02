@@ -1,0 +1,16 @@
+"use client";
+import {useEffect,useState} from "react";
+import {AdminPage} from "@/components/admin/AdminPage";
+import {createRecord,deleteRecord,listCollection,updateRecord} from "@/lib/firestore";
+import type {BlogPost} from "@/types/cms";
+const empty={title:"",slug:"",excerpt:"",content:""};
+export default function Page(){
+ const [items,setItems]=useState<BlogPost[]>([]); const [form,setForm]=useState(empty); const [editing,setEditing]=useState<string|null>(null); const [error,setError]=useState("");
+ async function load(){try{setItems(await listCollection<BlogPost>("cmsBlogs"));setError("")}catch{setError("Unable to load records.")}}
+ useEffect(()=>{void load()},[]);
+ async function save(e:React.FormEvent){e.preventDefault();try{if(editing)await updateRecord("cmsBlogs",editing,form);else await createRecord("cmsBlogs",form);setEditing(null);setForm(empty);await load()}catch{setError("Unable to save record.")}}
+ return <AdminPage><div className="container-fluid py-3"><h1 className="h3 seedlings-brand">Blogs</h1><p className="text-muted">Manage website content.</p>{error&&<div className="alert alert-danger">{error}</div>}<div className="row">
+ <div className="col-xl-4 mb-3"><div className="card"><form onSubmit={save}><div className="card-body"><div className="mb-3"><label className="form-label">Title</label><input className="form-control" type="text" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} /></div><div className="mb-3"><label className="form-label">Slug</label><input className="form-control" type="text" value={form.slug} onChange={e=>setForm({...form,slug:e.target.value})} /></div><div className="mb-3"><label className="form-label">Excerpt</label><input className="form-control" type="text" value={form.excerpt} onChange={e=>setForm({...form,excerpt:e.target.value})} /></div><div className="mb-3"><label className="form-label">Content</label><textarea className="form-control" rows={4} value={form.content} onChange={e=>setForm({...form,content:e.target.value})} /></div></div><div className="card-footer"><button className="btn btn-success me-2">{editing?"Update":"Create"}</button>{editing&&<button type="button" className="btn btn-secondary" onClick={()=>{setEditing(null);setForm(empty)}}>Cancel</button>}</div></form></div></div>
+ <div className="col-xl-8"><div className="card"><div className="card-body table-responsive p-0"><table className="table table-hover mb-0"><thead><tr><th>Title</th><th>Slug</th><th>Excerpt</th><th>Content</th><th>Actions</th></tr></thead><tbody>{items.map(item=><tr key={item.id}><td>{item.title}</td><td>{item.slug}</td><td>{item.excerpt}</td><td>{item.content}</td><td className="text-nowrap"><button className="btn btn-sm btn-outline-primary me-1" onClick={()=>{setEditing(item.id);setForm(item)}}>Edit</button><button className="btn btn-sm btn-outline-danger" onClick={async()=>{if(confirm("Delete this record?")){await deleteRecord("cmsBlogs",item.id);await load()}}}>Delete</button></td></tr>)}{!items.length&&<tr><td colSpan={6} className="text-center text-muted py-4">No records yet.</td></tr>}</tbody></table></div></div></div>
+ </div></div></AdminPage>
+}

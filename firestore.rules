@@ -1,0 +1,64 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profile() {
+      return get(/databases/$(database)/documents/userProfiles/$(request.auth.uid)).data;
+    }
+
+    function activeUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/userProfiles/$(request.auth.uid))
+        && profile().status == "active";
+    }
+
+    function admin() {
+      return activeUser()
+        && profile().role in ["ADMIN", "SUPER_ADMIN", "OPERATIONS"];
+    }
+
+    function superAdmin() {
+      return activeUser()
+        && profile().role == "SUPER_ADMIN";
+    }
+
+    match /userProfiles/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid || superAdmin();
+      allow create, delete: if false;
+      allow update: if superAdmin();
+    }
+
+    match /products/{id} { allow read, write: if admin(); }
+    match /salesProducts/{id} { allow read, write: if admin(); }
+    match /inventoryAdjustments/{id} { allow read, write: if admin(); }
+    match /growingBatches/{id} { allow read, write: if admin(); }
+    match /locations/{id} { allow read, write: if admin(); }
+    match /subscriptions/{id} { allow read, write: if admin(); }
+    match /subscriptionPlans/{id} { allow read, write: if admin(); }
+    match /deliveryCharges/{id} { allow read, write: if admin(); }
+    match /customers/{id} { allow read, write: if admin(); }
+    match /orders/{id} { allow read, write: if admin(); }
+    match /deliveryUsers/{id} { allow read, write: if admin(); }
+    match /deliveryAssignments/{id} { allow read, write: if admin(); }
+    match /fulfilments/{id} { allow read, write: if admin(); }
+
+    match /cmsPages/{id} { allow read, write: if admin(); }
+    match /cmsFaq/{id} { allow read, write: if admin(); }
+    match /cmsTestimonials/{id} { allow read, write: if admin(); }
+    match /cmsBlogs/{id} { allow read, write: if admin(); }
+    match /cmsBanners/{id} { allow read, write: if admin(); }
+    match /cmsNavigation/{id} { allow read, write: if admin(); }
+    match /cmsSiteSettings/{id} { allow read, write: if admin(); }
+
+    match /notifications/{id} { allow read, write: if admin(); }
+    match /auditEvents/{id} { allow read, write: if admin(); }
+
+    match /websiteTrustPoints/{id} { allow read, write: if admin(); }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

@@ -1,0 +1,8 @@
+SEEDLINGS ADMIN — PHASE 13 FINAL
+
+Project: seedlings-admin
+Phase: 13
+Status: Final Admin/CMS baseline
+
+Continue future website development as a separate seedlings-web project.
+Do not replace this Admin project when starting the website.

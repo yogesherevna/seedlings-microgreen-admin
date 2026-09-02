@@ -1,0 +1,20 @@
+export type ForecastRow = {
+  productId: string;
+  productName: string;
+  cycleDays: number;
+  expectedYieldPerTrayGrams: number;
+  minimumYieldPerTrayGrams: number;
+  safetyStockGrams: number;
+  currentStockGrams: number;
+  inProductionGrams: number;
+  historicalDemandGrams: number;
+  averageDailyDemandGrams: number;
+  cycleDemandForecastGrams: number;
+  committedOrderGrams: number;
+  projectedNeedGrams: number;
+  projectedAvailableGrams: number;
+  additionalGramsNeeded: number;
+  recommendedTrays: number;
+  coverageDays: number | null;
+  confidence: "Low" | "Medium" | "Good";
+};
