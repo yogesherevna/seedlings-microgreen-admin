@@ -1,5 +1,6 @@
 import { collection, doc, runTransaction, serverTimestamp } from "firebase/firestore";
 import { db } from "./firebase";
+import { auditEvent } from "./firestore";
 import type { DeliveryUser, DeliveryAssignment } from "@/types/delivery";
 import type { Order, OrderStatus } from "@/types/order";
 
@@ -62,6 +63,7 @@ export async function assignOrderToDelivery(
       updatedAt: serverTimestamp()
     });
   });
+  await auditEvent("create", "deliveryAssignments", assignmentRef.id, `Assigned ${order.orderNumber || order.id} to ${deliveryUser.name}`);
 }
 
 export async function updateDeliveryAssignmentStatus(
@@ -119,4 +121,5 @@ export async function updateDeliveryAssignmentStatus(
       });
     }
   });
+  await auditEvent("update", "deliveryAssignments", assignmentId, `Delivery assignment status changed to ${status}`);
 }

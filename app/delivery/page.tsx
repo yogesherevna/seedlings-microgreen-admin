@@ -19,6 +19,7 @@ export default function DeliveryPage() {
   const [assignments, setAssignments] = useState<DeliveryAssignment[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [selectedUser, setSelectedUser] = useState<DeliveryUser | null>(null);
+  const [creatingUser, setCreatingUser] = useState(false);
   const [selectedUserId, setSelectedUserId] = useState("");
   const [tab, setTab] = useState<Tab>("operations");
   const [search, setSearch] = useState("");
@@ -93,6 +94,7 @@ export default function DeliveryPage() {
       if (selectedUser) await updateRecord("deliveryUsers", selectedUser.id, data);
       else await createRecord("deliveryUsers", data);
       setSelectedUser(null);
+      setCreatingUser(false);
       setTab("users");
       await load();
     } catch { setError(selectedUser ? "Unable to update delivery user." : "Unable to create delivery user."); }
@@ -106,8 +108,8 @@ export default function DeliveryPage() {
     catch { setError("Unable to update delivery user."); }
   }
 
-  function openCreate() { setSelectedUser(null); setError(""); setTab("users"); }
-  function openEdit(u: DeliveryUser) { setSelectedUser(u); setError(""); setTab("users"); }
+  function openCreate() { setSelectedUser(null); setCreatingUser(true); setError(""); setTab("users"); }
+  function openEdit(u: DeliveryUser) { setSelectedUser(u); setCreatingUser(false); setError(""); setTab("users"); }
 
   return <AdminPage>
     <div className="container-fluid py-3">
@@ -130,7 +132,7 @@ export default function DeliveryPage() {
       {error && <div className="alert alert-danger">{error}</div>}
 
       <ul className="nav nav-tabs mb-3">
-        <li className="nav-item"><button className={`nav-link ${tab === "operations" ? "active" : ""}`} onClick={() => { setTab("operations"); setSelectedUser(null); }}> <i className="bi bi-truck me-1" /> Delivery Operations</button></li>
+        <li className="nav-item"><button className={`nav-link ${tab === "operations" ? "active" : ""}`} onClick={() => { setTab("operations"); setSelectedUser(null); setCreatingUser(false); }}> <i className="bi bi-truck me-1" /> Delivery Operations</button></li>
         <li className="nav-item"><button className={`nav-link ${tab === "users" ? "active" : ""}`} onClick={() => setTab("users")}> <i className="bi bi-people me-1" /> Delivery Users <span className="badge text-bg-secondary ms-1">{users.length}</span></button></li>
       </ul>
 
@@ -181,10 +183,10 @@ export default function DeliveryPage() {
           </div>
         </>
       ) : (
-        selectedUser ? (
+        selectedUser || creatingUser ? (
           <div className="card">
-            <div className="card-header"><h3 className="card-title mb-0">Edit Delivery User</h3></div>
-            <DeliveryUserForm user={selectedUser} onSubmit={saveDeliveryUser} onCancel={() => setSelectedUser(null)} />
+            <div className="card-header"><h3 className="card-title mb-0">{selectedUser ? "Edit Delivery User" : "Add Delivery User"}</h3></div>
+            <DeliveryUserForm user={selectedUser} onSubmit={saveDeliveryUser} onCancel={() => { setSelectedUser(null); setCreatingUser(false); }} />
           </div>
         ) : (
           <div className="card">
@@ -209,7 +211,7 @@ export default function DeliveryPage() {
         )
       )}
 
-      {tab === "users" && !selectedUser && users.length === 0 && (
+      {tab === "users" && !selectedUser && !creatingUser && users.length === 0 && (
         <div className="alert alert-info mt-3">No delivery users yet. Use <strong>Add Delivery User</strong> to create the first profile.</div>
       )}
     </div>

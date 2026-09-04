@@ -1,5 +1,6 @@
 import { collection, doc, runTransaction, serverTimestamp } from "firebase/firestore";
 import { db } from "./firebase";
+import { auditEvent } from "./firestore";
 import { listCollection } from "./firestore";
 import type { Product } from "@/types/catalog";
 import type { SalesProduct } from "@/types/salesProduct";
@@ -165,6 +166,7 @@ export async function packSalableProducts(
       });
     }
   });
+  await auditEvent("pack", "fulfilments", undefined, `Packed ${cleanLines.reduce((sum, line) => sum + line.quantityPacked, 0)} Salable Product unit(s) across ${cleanLines.length} worksheet line(s)`);
 }
 
 /** Compatibility wrapper for older callers. New packaging uses the worksheet API above. */

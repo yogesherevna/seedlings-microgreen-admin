@@ -1,4 +1,4 @@
-import { createRecord } from "./firestore";
+import { createRecord, sanitizeFirestoreData } from "./firestore";
 import type { Customer } from "@/types/customer";
 import type { SalesProduct } from "@/types/salesProduct";
 import type { DeliveryCharge } from "@/types/deliveryCharge";
@@ -33,7 +33,7 @@ export async function createAdminOrder(args:{
   const deliveryFee=args.deliveryCharge?.mode==="free"?0:Number(args.deliveryCharge?.amount||0);
   const orderType=args.subscription?"subscription":"one_time";
   const orderNumber=`ORD-${Date.now().toString(36).toUpperCase()}`;
-  return createRecord("orders",{
+  return createRecord("orders", sanitizeFirestoreData({
     orderNumber, customerId:args.customer.id, customerName:args.customer.name||"",
     customerMobile:args.customer.mobileNumber||args.customer.phone||"",
     items, subtotal, deliveryFee, discount:0, total:subtotal+deliveryFee,
@@ -51,5 +51,5 @@ export async function createAdminOrder(args:{
     deliveryChargeName:args.deliveryCharge?.name||"",
     deliveryChargeSnapshot:deliveryFee,
     packingStatus:"pending",
-  } as Record<string,unknown>);
+  } as Record<string,unknown>));
 }

@@ -5,6 +5,7 @@ import {
   serverTimestamp
 } from "firebase/firestore";
 import { db } from "./firebase";
+import { auditEvent } from "./firestore";
 import type { InventoryAdjustmentType, Product } from "@/types/catalog";
 
 export async function adjustProductStock(
@@ -68,4 +69,5 @@ export async function adjustProductStock(
       createdAt: serverTimestamp()
     });
   });
+  await auditEvent("stock_adjustment", "products", product.id, `${type} stock adjustment: ${quantity} g — ${reason.trim()}`);
 }

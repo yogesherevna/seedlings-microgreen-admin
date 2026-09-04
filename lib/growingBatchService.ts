@@ -1,5 +1,6 @@
 import { collection, doc, runTransaction, serverTimestamp } from "firebase/firestore";
 import { db } from "./firebase";
+import { auditEvent } from "./firestore";
 import type { Product } from "@/types/catalog";
 import type { GrowingBatch, GrowingBatchItem, GrowingBatchStatus } from "@/types/growingBatch";
 
@@ -43,6 +44,7 @@ export async function createGrowingBatch(data:{
       createdByUid:data.uid,createdByEmail:data.email??"",createdAt:serverTimestamp(),updatedAt:serverTimestamp()
     });
   });
+  await auditEvent("create", "growingBatches", ref.id, `Created growing batch ${data.batchNumber.trim()}`);
   return ref.id;
 }
 export async function harvestGrowingBatchItem(
@@ -73,4 +75,5 @@ export async function harvestGrowingBatchItem(
     transaction.update(batchRef,{items:updatedItems,status:batchStatus,updatedAt:serverTimestamp()});
     transaction.set(adjustmentRef,{productId:batchItem.productId,productName:batchItem.productName,type:"harvest",quantity:netUsableYieldGrams,unit:"g",previousStock,newStock,actualHarvestGrams:actualYieldGrams,wastageGrams,reason:`Harvested ${latest.batchNumber}`,growingBatchId:batch.id,growingBatchItemId:itemId,createdByUid:uid,createdByEmail:email??"",createdAt:serverTimestamp()});
   });
+  await auditEvent("harvest", "growingBatches", batch.id, `Harvested ${batchItem.productName}: ${netUsableYieldGrams} g usable`);
 }

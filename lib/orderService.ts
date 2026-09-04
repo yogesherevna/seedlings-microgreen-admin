@@ -6,6 +6,7 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebase";
 import type { Order, OrderStatus } from "@/types/order";
+import { auditEvent } from "./firestore";
 import { canTransitionOrderStatus } from "@/types/order";
 
 export async function updateOrderStatus(
@@ -42,6 +43,7 @@ export async function updateOrderStatus(
       })
     });
   });
+  await auditEvent("update", "orders", order.id, `Order status changed to ${nextStatus}`);
 }
 
 
@@ -76,4 +78,5 @@ export async function refundOrderPayment(
       updatedAt: serverTimestamp(),
     });
   });
+  await auditEvent("refund", "orders", order.id, `Order payment refunded: ${amount}`);
 }
