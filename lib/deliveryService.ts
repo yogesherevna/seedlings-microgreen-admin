@@ -4,6 +4,7 @@ import { auditEvent } from "./firestore";
 import { createSubscriptionDeliveryAtHandoverInTransaction, updateSubscriptionDeliveryStatusInTransaction } from "./subscriptionDeliveryService";
 import type { DeliveryUser, DeliveryAssignment } from "@/types/delivery";
 import type { Order, OrderStatus } from "@/types/order";
+import { recordBatchHandoverSalesInTransaction } from "./growingBatchService";
 
 export async function assignOrderToDelivery(
   order: Order,
@@ -34,7 +35,15 @@ export async function assignOrderToDelivery(
     const history = Array.isArray(current.statusHistory) ? current.statusHistory : [];
     const nextStatus: OrderStatus = "out_for_delivery";
 
-    // Read/create the subscription delivery before any other transaction writes.
+    // Read batch allocations and update sold quantities before any other transaction writes.
+    await recordBatchHandoverSalesInTransaction(
+      transaction,
+      fulfilmentSnapshot.docs.map(snapshot => doc(db, "fulfilments", snapshot.id)),
+      adminUid,
+      adminEmail,
+    );
+
+    // Read/create the subscription delivery before the remaining transaction writes.
     await createSubscriptionDeliveryAtHandoverInTransaction(transaction, order, adminUid, adminEmail);
 
     transaction.update(orderRef, {

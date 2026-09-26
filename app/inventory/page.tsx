@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { AdminPage } from "@/components/admin/AdminPage";
 import { listCollection } from "@/lib/firestore";
-import { adjustGrowingBatchStock } from "@/lib/growingBatchService";
+import { closeGrowingBatchFromInventory, updateGrowingBatchSoldQuantity } from "@/lib/growingBatchService";
 import { confirmAction, showError, showToast } from "@/lib/alerts";
 import { useAuth } from "@/components/auth/AuthProvider";
 import type { InventoryAdjustment, Product } from "@/types/catalog";
@@ -15,8 +15,9 @@ export default function InventoryPage() {
   const [adjustments, setAdjustments] = useState<InventoryAdjustment[]>([]);
   const [batches, setBatches] = useState<GrowingBatch[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState("");
-  const [batchQuantities, setBatchQuantities] = useState<Record<string, number>>({});
+  const [soldQuantities, setSoldQuantities] = useState<Record<string, number>>({});
   const [savingBatch, setSavingBatch] = useState(false);
+  const [closingBatch, setClosingBatch] = useState(false);
   const [error, setError] = useState("");
 
   async function load() {
@@ -45,29 +46,63 @@ export default function InventoryPage() {
   );
   const selectedBatch = eligibleBatches.find(batch => batch.id === selectedBatchId) ?? null;
   const selectedBatchItems = (selectedBatch?.items ?? []).filter(item => item.status === "completed_harvested" || item.status === "failed");
+  const selectedBatchAdjustments = selectedBatchId
+    ? adjustments.filter(adjustment => adjustment.growingBatchId === selectedBatchId)
+    : adjustments;
+  function batchStatusLabel(status: GrowingBatch["status"]) {
+    return status.replaceAll("_", " ").replace(/\b\w/g, value => value.toUpperCase());
+  }
   function selectBatch(id: string) {
     setSelectedBatchId(id);
     const batch = eligibleBatches.find(item => item.id === id);
-    if (!batch) { setBatchQuantities({}); return; }
-    setBatchQuantities(Object.fromEntries((batch.items ?? [])
+    if (!batch) { setSoldQuantities({}); return; }
+    setSoldQuantities(Object.fromEntries((batch.items ?? [])
       .filter(item => item.status === "completed_harvested" || item.status === "failed")
-      .map(item => [item.id, Number(item.actualYieldGrams ?? 0)])));
+      .map(item => [item.id, Math.max(0, Number(item.soldQuantityGrams ?? 0))])));
   }
-  async function saveBatchStock() {
+  async function saveSoldQuantity() {
     if (!user || !selectedBatch) return;
     const confirmed = await confirmAction({
-      title: "Save batch-wise stock?",
-      text: `This will reconcile ${selectedBatch.batchNumber} and remove it from this selector.`,
-      confirmText: "Save Stock",
+      title: "Update sold quantity?",
+      text: `This will update the sold quantity for ${selectedBatch.batchNumber}. Batch stock will not be changed.`,
+      confirmText: "Update Sold Quantity",
     });
     if (!confirmed) return;
     setSavingBatch(true); setError("");
     try {
-      await adjustGrowingBatchStock(selectedBatch, batchQuantities, user.uid, user.email ?? undefined);
-      showToast(`${selectedBatch.batchNumber} stock saved successfully.`);
-      setSelectedBatchId(""); setBatchQuantities({}); await load();
-    } catch (e) { await showError(e, "Unable to save batch-wise stock."); }
+      await updateGrowingBatchSoldQuantity(selectedBatch, soldQuantities, user.uid, user.email ?? undefined);
+      showToast(`${selectedBatch.batchNumber} sold quantity updated successfully.`);
+      await load();
+      const refreshed = (await listCollection<GrowingBatch>("growingBatches")).find(batch => batch.id === selectedBatch.id);
+      if (refreshed) {
+        setSelectedBatchId(refreshed.id);
+        setSoldQuantities(Object.fromEntries((refreshed.items ?? [])
+          .filter(item => item.status === "completed_harvested" || item.status === "failed")
+          .map(item => [item.id, Math.max(0, Number(item.soldQuantityGrams ?? 0))])));
+      }
+    } catch (e) { await showError(e, "Unable to update sold quantity."); }
     finally { setSavingBatch(false); }
+  }
+
+  async function closeBatch() {
+    if (!user || !selectedBatch) return;
+    const confirmed = await confirmAction({
+      title: "Close this batch?",
+      text: "Closing this batch will set each microgreen's batch stock to its sold quantity and make the batch unavailable for further selling. Are you sure you want to close it?",
+      confirmText: "Close Batch",
+      cancelText: "Cancel",
+      icon: "warning",
+    });
+    if (!confirmed) return;
+    setClosingBatch(true); setError("");
+    try {
+      await closeGrowingBatchFromInventory(selectedBatch, user.uid, user.email ?? undefined);
+      showToast(`${selectedBatch.batchNumber} closed successfully.`);
+      setSelectedBatchId("");
+      setSoldQuantities({});
+      await load();
+    } catch (e) { await showError(e, "Unable to close batch."); }
+    finally { setClosingBatch(false); }
   }
 
   return <AdminPage>
@@ -89,25 +124,33 @@ export default function InventoryPage() {
               <label className="form-label">Select batch *</label>
               <select className="form-select" value={selectedBatchId} onChange={e => selectBatch(e.target.value)}>
                 <option value="">Select harvested batch...</option>
-                {eligibleBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batchNumber} · {batch.locationName || "No location"}</option>)}
+                {eligibleBatches.map(batch => <option key={batch.id} value={batch.id}>{batch.batchNumber} · {batch.locationName || "No location"} ({batchStatusLabel(batch.status)})</option>)}
               </select>
               <div className="form-text">Batches already adjusted or marked delivered are automatically hidden.</div>
             </div>
           </div>
           {selectedBatch && <div className="mt-4">
-            <div className="alert alert-info small mb-3"><strong>{selectedBatch.batchNumber}</strong> · Started {selectedBatch.startDate} · {selectedBatch.locationName || "No location"}. The quantity below starts from the actual usable harvest. Set it to <strong>0</strong> or enter the final quantity you want recorded for this batch.</div>
-            <div className="table-responsive"><table className="table table-sm align-middle mb-3"><thead><tr><th>Product</th><th>Actual harvested</th><th>Actual loss</th><th>Actual usable</th><th style={{width:180}}>Batch stock (gms)</th></tr></thead><tbody>
-              {selectedBatchItems.map(item => <tr key={item.id}>
-                <td><strong>{item.productName}</strong></td>
-                <td>{Number(item.actualHarvestGrams ?? 0).toLocaleString()} gms</td>
-                <td>{Number(item.wastageGrams ?? 0).toLocaleString()} gms</td>
-                <td>{Number(item.actualYieldGrams ?? 0).toLocaleString()} gms</td>
-                <td><input className="form-control form-control-sm" type="number" min="0" step="1" value={batchQuantities[item.id] ?? 0} onChange={e => setBatchQuantities(v => ({...v, [item.id]: Math.max(0, Number(e.target.value) || 0)}))}/></td>
-              </tr>)}
+            <div className="alert alert-info small mb-3"><strong>{selectedBatch.batchNumber}</strong> · Started {selectedBatch.startDate} · {selectedBatch.locationName || "No location"}. Edit only the <strong>Sold Quantity</strong>. Batch Stock is read-only here. Closing the batch reconciles Batch Stock to Sold Quantity.</div>
+            <div className="table-responsive"><table className="table table-sm align-middle mb-3"><thead><tr><th>Microgreen</th><th>Actual harvested</th><th>Actual loss</th><th>Actual usable</th><th>Batch stock</th><th style={{width:180}}>Sold quantity (gms)</th></tr></thead><tbody>
+              {selectedBatchItems.map(item => {
+                const batchStock = Math.max(0, Number(item.batchStockGrams ?? item.actualYieldGrams ?? 0));
+                const sold = Math.max(0, Number(soldQuantities[item.id] ?? item.soldQuantityGrams ?? 0));
+                return <tr key={item.id}>
+                  <td><strong>{item.productName}</strong></td>
+                  <td>{Number(item.actualHarvestGrams ?? 0).toLocaleString()} gms</td>
+                  <td>{Number(item.wastageGrams ?? 0).toLocaleString()} gms</td>
+                  <td>{Number(item.actualYieldGrams ?? 0).toLocaleString()} gms</td>
+                  <td><strong>{batchStock.toLocaleString()} gms</strong></td>
+                  <td><input className="form-control form-control-sm" type="number" min="0" max={Number(item.actualYieldGrams ?? 0)} step="1" value={sold} onChange={e => setSoldQuantities(v => ({...v, [item.id]: Math.max(0, Number(e.target.value) || 0)}))}/></td>
+                </tr>;
+              })}
             </tbody></table></div>
-            <div className="d-flex justify-content-end"><button type="button" className="btn btn-success" disabled={savingBatch} onClick={() => void saveBatchStock()}>{savingBatch ? "Saving..." : "Save Batch Stock"}</button></div>
+            <div className="d-flex justify-content-end gap-2">
+              <button type="button" className="btn btn-outline-primary" disabled={savingBatch || closingBatch} onClick={() => void saveSoldQuantity()}>{savingBatch ? "Updating..." : "Update Sold Quantity"}</button>
+              <button type="button" className="btn btn-danger" disabled={savingBatch || closingBatch} onClick={() => void closeBatch()}>{closingBatch ? "Closing..." : "Close Batch"}</button>
+            </div>
           </div>}
-          {!eligibleBatches.length && <div className="text-muted mt-3">No harvested batches are waiting for batch-wise stock adjustment.</div>}
+          {!eligibleBatches.length && <div className="text-muted mt-3">No harvested batches are waiting for sold-quantity adjustment.</div>}
         </div>
       </div>
 
@@ -145,15 +188,15 @@ export default function InventoryPage() {
 
         <div className="col-12">
           <div className="card">
-            <div className="card-header"><h3 className="card-title">Adjustment history</h3></div>
+            <div className="card-header"><h3 className="card-title">Adjustment history{selectedBatch ? ` · ${selectedBatch.batchNumber}` : ""}</h3></div>
             <div className="card-body table-responsive p-0">
               <table className="table table-sm table-hover mb-0">
                 <thead><tr><th>Product</th><th>Type</th><th>Qty (gms)</th><th>Before (gms)</th><th>After (gms)</th><th>Reason</th><th>Created by</th></tr></thead>
-                <tbody>{adjustments.map(a => <tr key={a.id}>
+                <tbody>{selectedBatchAdjustments.map(a => <tr key={a.id}>
                   <td>{a.productName}</td><td>{a.type}</td><td>{Number(a.quantity ?? 0).toLocaleString()} gms</td><td>{Number(a.previousStock ?? 0).toLocaleString()} gms</td><td>{Number(a.newStock ?? 0).toLocaleString()} gms</td>
                   <td>{a.reason}</td><td>{a.createdByEmail || a.createdByUid}</td>
                 </tr>)}
-                {!adjustments.length && <tr><td colSpan={7} className="text-center text-muted py-4">No adjustments yet.</td></tr>}
+                {!selectedBatchAdjustments.length && <tr><td colSpan={7} className="text-center text-muted py-4">{selectedBatchId ? "No adjustments for this batch yet." : "No adjustments yet."}</td></tr>}
                 </tbody>
               </table>
             </div>

@@ -242,3 +242,35 @@ The repository previously contained 51 Markdown files consisting of old phase no
 5. `CHANGELOG.md`
 
 Future small fixes should normally update `CHANGELOG.md` rather than creating another phase-specific Markdown file. Permanent rules belong in `DEVELOPMENT-RULES.md`; current system facts belong in `CURRENT-STATE.md`; future scope belongs in `DEVELOPMENT-ROADMAP.md`.
+
+## Growing Batch Sold Quantity / Auto Close
+
+- Existing Growing Batch creation and production planning are unchanged.
+- Sold quantity is recorded against the exact batch microgreen from fulfilment allocations when the related order is handed over.
+- The existing batch Planned Quantity (the planned production quantity represented by the batch item's tray plan) is the close target.
+- When Sold Quantity reaches the Planned Quantity for every microgreen in the batch, the batch is automatically closed.
+- Existing manual Close Batch confirmation remains separate.
+- Handover records are protected from double-counting through fulfilment-level sold-quantity recording metadata.
+## Growing Batch Listing — Active / Closed Views
+
+- Active batches now show each Microgreen as its own row with Planned, Sold and Harvested quantities.
+- Active rows show the current production Stage derived from the existing growing phases.
+- Sold quantity includes a progress indicator against the batch item's Planned Quantity.
+- Closed batches are separated into a dedicated Closed Batches tab and retain the existing compact batch-level listing.
+- Existing View Status / View Details actions remain available for both active and closed batches.
+
+## Inventory Batch Selection / Adjustment Updates
+
+- Adjustment history is filtered to the selected Growing Batch when a batch is selected.
+- Batch selector options show the batch status in brackets.
+- Batch stock adjustment starts from Actual Usable Quantity minus the batch microgreen's Sold Quantity.
+- Batch-stock reconciliation compares the requested remaining batch stock with the current stored batch stock to avoid re-applying previously consumed quantities.
+- Microgreen aggregate inventory is currently reduced during Fulfilment Packing. Handover records Sold Quantity against the Growing Batch but does not perform a second aggregate inventory deduction, preventing double reduction.
+
+## Inventory batch sold-quantity adjustment
+- Batch stock is now read-only in Inventory batch adjustment.
+- Sold Quantity is the editable field.
+- Added Update Sold Quantity action without changing batch stock.
+- Added Close Batch action in Inventory; closing sets each harvested item's batch stock to its sold quantity and closes the batch.
+- Removed the manual Close Batch button from the Growing Batch detail view.
+- Existing handover sold-quantity recording remains unchanged.

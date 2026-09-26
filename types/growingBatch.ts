@@ -41,6 +41,9 @@ export type GrowingBatchItem = {
   expectedLossGrams: number;
   expectedUsableYieldGrams: number;
 
+  /** Quantity from this batch that has been handed over against customer sales. */
+  soldQuantityGrams?: number;
+
   /** Planned phase dates calculated backwards from the batch harvest date. */
   phases?: {
     soaking: GrowingBatchPhase;

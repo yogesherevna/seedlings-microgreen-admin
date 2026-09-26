@@ -1,4 +1,4 @@
-import { collection, doc, runTransaction, serverTimestamp } from "firebase/firestore";
+import { collection, doc, runTransaction, serverTimestamp, type Transaction, type DocumentReference } from "firebase/firestore";
 import { db } from "./firebase";
 import { auditEvent } from "./firestore";
 import type { Product } from "@/types/catalog";
@@ -411,44 +411,101 @@ export async function harvestGrowingBatchItem(
 
 
 /**
- * Reconcile a harvested batch into batch-wise stock.
- * Harvest already adds the actual usable grams to the product's aggregate stock.
- * This operation therefore applies only the difference between the harvested
- * quantity and the admin's final batch stock quantity, then marks the batch
- * as adjusted so it no longer appears in the Inventory batch selector.
+ * Update only the sold quantity for harvested batch items.
+ * This does not change product aggregate inventory or batch stock.
  */
-export async function adjustGrowingBatchStock(
+export async function updateGrowingBatchSoldQuantity(
   batch: GrowingBatch,
-  quantities: Record<string, number>,
+  soldQuantities: Record<string, number>,
   uid: string,
   email?: string,
 ) {
-  if (batch.stockAdjusted) throw new Error("This batch has already been adjusted in batch-wise stock.");
-  if (batch.delivered) throw new Error("This batch has already been marked as delivered.");
+  if (batch.delivered || batch.status === "closed") {
+    throw new Error("This batch is already closed.");
+  }
 
-  const selectedItems = (batch.items ?? []).filter(item => item.status === "completed_harvested" || item.status === "failed");
-  if (!selectedItems.length) throw new Error("This batch has no harvested items to add to batch-wise stock.");
+  const selectedItems = (batch.items ?? []).filter(
+    item => item.status === "completed_harvested" || item.status === "failed",
+  );
+  if (!selectedItems.length) throw new Error("This batch has no harvested items.");
 
   for (const item of selectedItems) {
-    const value = Number(quantities[item.id] ?? 0);
+    const value = Number(soldQuantities[item.id] ?? 0);
+    const harvested = Math.max(0, Math.round(Number(item.actualYieldGrams ?? 0)));
     if (!Number.isInteger(value) || value < 0) {
-      throw new Error(`Stock quantity for ${item.productName} must be a whole number of grams and cannot be negative.`);
+      throw new Error(`Sold quantity for ${item.productName} must be a whole number of grams and cannot be negative.`);
+    }
+    if (value > harvested) {
+      throw new Error(`Sold quantity for ${item.productName} cannot exceed actual usable quantity of ${harvested.toLocaleString()}g.`);
     }
   }
 
   const batchRef = doc(db, "growingBatches", batch.id);
   await runTransaction(db, async transaction => {
-    const batchSnap = await transaction.get(batchRef);
-    if (!batchSnap.exists()) throw new Error("Growing batch no longer exists.");
-    const latest = batchSnap.data() as GrowingBatch;
-    if (latest.stockAdjusted) throw new Error("This batch was already adjusted. Refresh and try again.");
-    if (latest.delivered) throw new Error("This batch has already been marked as delivered.");
+    const snapshot = await transaction.get(batchRef);
+    if (!snapshot.exists()) throw new Error("Growing batch no longer exists.");
+    const latest = snapshot.data() as GrowingBatch;
+    if (latest.delivered || latest.status === "closed") throw new Error("This batch was already closed. Refresh and try again.");
+
+    const updatedItems = (latest.items ?? []).map(item => {
+      if (!selectedItems.some(selected => selected.id === item.id)) return item;
+      return {
+        ...item,
+        soldQuantityGrams: Math.max(0, Math.round(Number(soldQuantities[item.id] ?? 0))),
+      };
+    });
+
+    transaction.update(batchRef, { items: updatedItems, updatedAt: serverTimestamp() });
+  });
+
+  await auditEvent(
+    "batch_sold_quantity_adjustment",
+    "growingBatches",
+    batch.id,
+    `Updated sold quantity for ${batch.batchNumber}`,
+  );
+}
+
+/**
+ * Close a harvested batch from Inventory.
+ * Closing reconciles each harvested item's remaining batch stock to its sold
+ * quantity, then marks the batch closed. Product aggregate stock is adjusted
+ * by the same delta so inventory stays consistent with the batch record.
+ */
+export async function closeGrowingBatchFromInventory(
+  batch: GrowingBatch,
+  uid: string,
+  email?: string,
+) {
+  if (batch.delivered || batch.status === "closed") {
+    throw new Error("This batch is already closed.");
+  }
+
+  const selectedItems = (batch.items ?? []).filter(
+    item => item.status === "completed_harvested" || item.status === "failed",
+  );
+  if (!selectedItems.length) throw new Error("This batch has no harvested items to close.");
+
+  const batchRef = doc(db, "growingBatches", batch.id);
+
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(batchRef);
+    if (!snapshot.exists()) throw new Error("Growing batch no longer exists.");
+    const latest = snapshot.data() as GrowingBatch;
+    if (latest.delivered || latest.status === "closed") throw new Error("This batch was already closed. Refresh and try again.");
 
     const latestItems = latest.items ?? [];
-    const productIds = [...new Set(selectedItems.map(item => item.productId))];
+    const harvestedItems = latestItems.filter(
+      item => item.status === "completed_harvested" || item.status === "failed",
+    );
+    if (!harvestedItems.length) throw new Error("This batch has no harvested items to close.");
+
+    const productIds = [...new Set(harvestedItems.map(item => item.productId))];
     const productRefs = productIds.map(id => doc(db, "products", id));
     const productSnaps = await Promise.all(productRefs.map(ref => transaction.get(ref)));
-    if (productSnaps.some(snap => !snap.exists())) throw new Error("One or more production products no longer exist. Refresh and retry.");
+    if (productSnaps.some(snap => !snap.exists())) {
+      throw new Error("One or more production products no longer exist. Refresh and retry.");
+    }
 
     const productStates = new Map(productIds.map((id, index) => [id, {
       ref: productRefs[index],
@@ -457,29 +514,35 @@ export async function adjustGrowingBatchStock(
     }]));
 
     const updatedItems = latestItems.map(item => {
-      if (!selectedItems.some(selected => selected.id === item.id)) return item;
-      const desired = Number(quantities[item.id] ?? 0);
-      return { ...item, batchStockGrams: desired };
+      if (!harvestedItems.some(selected => selected.id === item.id)) return item;
+      const sold = Math.max(0, Math.round(Number(item.soldQuantityGrams ?? 0)));
+      return { ...item, batchStockGrams: sold };
     });
 
-    for (const item of selectedItems) {
+    for (const item of harvestedItems) {
       const state = productStates.get(item.productId);
       if (!state) throw new Error(`Product ${item.productName} is missing.`);
-      const harvestedContribution = Number(item.actualYieldGrams ?? 0);
-      const desiredContribution = Number(quantities[item.id] ?? 0);
-      const delta = desiredContribution - harvestedContribution;
+      const currentBatchStock = Math.max(0, Math.round(Number(item.batchStockGrams ?? item.actualYieldGrams ?? 0)));
+      const sold = Math.max(0, Math.round(Number(item.soldQuantityGrams ?? 0)));
+      const delta = sold - currentBatchStock;
       const nextStock = state.previous + delta;
       if (nextStock < 0) {
-        throw new Error(`${item.productName}: aggregate stock would become negative. Current stock is ${state.previous.toLocaleString()}g, while this batch adjustment removes ${Math.abs(delta).toLocaleString()}g.`);
+        throw new Error(`${item.productName}: closing this batch would make aggregate stock negative.`);
       }
       state.previous = nextStock;
     }
 
-    // Apply each product's final aggregate stock once, even when a batch contains
-    // multiple items for the same production product.
     for (const state of productStates.values()) {
       const current = state.product;
+      const affected = harvestedItems.filter(item => item.productId === current.id);
+      const delta = affected.reduce((sum, item) => {
+        const currentBatchStock = Math.max(0, Math.round(Number(item.batchStockGrams ?? item.actualYieldGrams ?? 0)));
+        const sold = Math.max(0, Math.round(Number(item.soldQuantityGrams ?? 0)));
+        return sum + (sold - currentBatchStock);
+      }, 0);
+      const previousStock = state.previous - delta;
       const nextStock = state.previous;
+
       transaction.update(state.ref, {
         stockGrams: nextStock,
         stock: nextStock,
@@ -490,19 +553,18 @@ export async function adjustGrowingBatchStock(
             : current.status,
         updatedAt: serverTimestamp(),
       });
+
       const adjustmentRef = doc(collection(db, "inventoryAdjustments"));
-      const productItems = selectedItems.filter(item => item.productId === current.id);
-      const detail = productItems.map(item => `${item.productName}: ${Number(quantities[item.id] ?? 0)}g`).join(", ");
       transaction.set(adjustmentRef, {
         productId: current.id,
         productName: current.name,
-        type: "batch_stock",
-        quantity: productItems.reduce((sum, item) => sum + Number(quantities[item.id] ?? 0), 0),
+        type: "batch_close",
+        quantity: Math.abs(delta),
         unit: "g",
-        previousStock: nextStock - productItems.reduce((sum, item) => sum + (Number(quantities[item.id] ?? 0) - Number(item.actualYieldGrams ?? 0)), 0),
+        previousStock,
         newStock: nextStock,
-        reason: `Batch-wise stock reconciliation: ${latest.batchNumber} (${detail})`,
-        growingBatchId: batch.id,
+        reason: `Batch closed: ${latest.batchNumber}. Batch stock set to sold quantity.`,
+        growingBatchId: latest.id,
         createdByUid: uid,
         createdByEmail: email ?? "",
         createdAt: serverTimestamp(),
@@ -515,11 +577,126 @@ export async function adjustGrowingBatchStock(
       stockAdjustedAt: serverTimestamp(),
       stockAdjustedByUid: uid,
       stockAdjustedByEmail: email ?? "",
+      delivered: true,
+      deliveredAt: serverTimestamp(),
+      deliveredByUid: uid,
+      deliveredByEmail: email ?? "",
+      status: "closed" as GrowingBatchStatus,
       updatedAt: serverTimestamp(),
     });
   });
 
-  await auditEvent("batch_stock_adjustment", "growingBatches", batch.id, `Batch-wise stock reconciled for ${batch.batchNumber}`);
+  await auditEvent("batch_close", "growingBatches", batch.id, `Closed batch ${batch.batchNumber} from Inventory by setting batch stock to sold quantity`);
+}
+
+export async function recordBatchHandoverSalesInTransaction(
+  transaction: Transaction,
+  fulfilmentRefs: DocumentReference[],
+  uid: string,
+  email?: string,
+) {
+  if (!fulfilmentRefs.length) return { updatedBatchIds: [] as string[], closedBatchIds: [] as string[] };
+
+  const fulfilmentSnapshots = await Promise.all(fulfilmentRefs.map(ref => transaction.get(ref)));
+  const allocationsByBatch = new Map<string, Map<string, number>>();
+  const batchIds = new Set<string>();
+  const recordableFulfilments: { ref: DocumentReference; index: number }[] = [];
+
+  fulfilmentSnapshots.forEach((snapshot, index) => {
+    if (!snapshot.exists()) return;
+    const data = snapshot.data() as { allocations?: Array<{ growingBatchId?: string; growingBatchItemId?: string; quantityGrams?: number }>; soldQuantityRecordedAt?: unknown };
+    if (data.soldQuantityRecordedAt) return;
+    recordableFulfilments.push({ ref: fulfilmentRefs[index], index });
+    for (const allocation of data.allocations ?? []) {
+      if (!allocation.growingBatchId || !allocation.growingBatchItemId) continue;
+      const qty = Math.max(0, Math.round(Number(allocation.quantityGrams ?? 0)));
+      if (!qty) continue;
+      batchIds.add(allocation.growingBatchId);
+      const itemMap = allocationsByBatch.get(allocation.growingBatchId) ?? new Map<string, number>();
+      itemMap.set(allocation.growingBatchItemId, (itemMap.get(allocation.growingBatchItemId) ?? 0) + qty);
+      allocationsByBatch.set(allocation.growingBatchId, itemMap);
+    }
+  });
+
+  if (!batchIds.size) {
+    for (const { ref } of recordableFulfilments) {
+      transaction.update(ref, { soldQuantityRecordedAt: serverTimestamp(), soldQuantityRecordedByUid: uid, soldQuantityRecordedByEmail: email ?? "", updatedAt: serverTimestamp() });
+    }
+    return { updatedBatchIds: [] as string[], closedBatchIds: [] as string[] };
+  }
+
+  const batchRefs = [...batchIds].map(id => doc(db, "growingBatches", id));
+  const batchSnapshots = await Promise.all(batchRefs.map(ref => transaction.get(ref)));
+  const latestBatches = new Map<string, GrowingBatch>();
+  batchSnapshots.forEach(snapshot => {
+    if (snapshot.exists()) latestBatches.set(snapshot.id, { id: snapshot.id, ...(snapshot.data() as Omit<GrowingBatch, "id">) });
+  });
+
+  const updatedBatchStates = new Map<string, GrowingBatch>();
+  const updatedBatchIds: string[] = [];
+  const closedBatchIds: string[] = [];
+
+  for (const [batchId, itemMap] of allocationsByBatch) {
+    const batch = latestBatches.get(batchId);
+    if (!batch || batch.delivered || batch.status === "closed") continue;
+    const updatedItems = (batch.items ?? []).map(item => {
+      const sold = Math.max(0, Math.round(Number(item.soldQuantityGrams ?? 0)));
+      const add = itemMap.get(item.id) ?? 0;
+      return add > 0 ? { ...item, soldQuantityGrams: sold + add } : item;
+    });
+    const updatedBatch = { ...batch, items: updatedItems };
+    updatedBatchStates.set(batchId, updatedBatch);
+    updatedBatchIds.push(batchId);
+    transaction.update(doc(db, "growingBatches", batchId), { items: updatedItems, updatedAt: serverTimestamp() });
+  }
+
+  for (const [batchId, batch] of updatedBatchStates) {
+    const canAutoClose = batch.items.length > 0 && batch.items.every(item => {
+      const planned = Number(item.expectedYieldGrams ?? 0);
+      const sold = Number(item.soldQuantityGrams ?? 0);
+      return Number.isFinite(planned) && planned > 0 && sold >= planned;
+    });
+    if (canAutoClose) {
+      transaction.update(doc(db, "growingBatches", batchId), {
+        status: "closed" as GrowingBatchStatus,
+        delivered: true,
+        deliveredAt: serverTimestamp(),
+        deliveredByUid: uid,
+        deliveredByEmail: email ?? "",
+        updatedAt: serverTimestamp(),
+      });
+      closedBatchIds.push(batchId);
+    }
+  }
+
+  for (const { ref } of recordableFulfilments) {
+    transaction.update(ref, {
+      soldQuantityRecordedAt: serverTimestamp(),
+      soldQuantityRecordedByUid: uid,
+      soldQuantityRecordedByEmail: email ?? "",
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  return { updatedBatchIds, closedBatchIds };
+}
+
+export async function recordBatchHandoverSales(
+  fulfilmentIds: string[],
+  uid: string,
+  email?: string,
+) {
+  if (!fulfilmentIds.length) return { updatedBatchIds: [] as string[], closedBatchIds: [] as string[] };
+  const fulfilmentRefs = fulfilmentIds.map(id => doc(db, "fulfilments", id));
+  const result = { updatedBatchIds: [] as string[], closedBatchIds: [] as string[] };
+  await runTransaction(db, async transaction => {
+    const updated = await recordBatchHandoverSalesInTransaction(transaction, fulfilmentRefs, uid, email);
+    result.updatedBatchIds.push(...updated.updatedBatchIds);
+    result.closedBatchIds.push(...updated.closedBatchIds);
+  });
+  for (const batchId of result.updatedBatchIds) await auditEvent("batch_handover_sales", "growingBatches", batchId, `Updated sold quantity from handover for batch ${batchId}`);
+  for (const batchId of result.closedBatchIds) await auditEvent("batch_auto_close", "growingBatches", batchId, `Automatically closed batch ${batchId} after sold quantity reached planned quantity`);
+  return result;
 }
 
 export async function markGrowingBatchDelivered(

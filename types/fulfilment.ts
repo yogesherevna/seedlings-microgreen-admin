@@ -56,6 +56,9 @@ export type Fulfilment = {
   updatedAt?: unknown;
   deliveryUserId?: string;
   deliveryUserName?: string;
+  soldQuantityRecordedAt?: unknown;
+  soldQuantityRecordedByUid?: string;
+  soldQuantityRecordedByEmail?: string;
 };
 
 /** Historical fields retained so older fulfilment records can still be displayed safely. */

@@ -12,7 +12,6 @@ import {
   calculateGrowingPhaseDates,
   createGrowingBatch,
   harvestGrowingBatchItem,
-  markGrowingBatchDelivered,
 } from "@/lib/growingBatchService";
 import { confirmAction, showError, showSuccess } from "@/lib/alerts";
 import type { Product } from "@/types/catalog";
@@ -250,68 +249,143 @@ export default function GrowingBatchesPage() {
   </div></AdminPage>;
 }
 
+function batchStage(item: GrowingBatchItem) {
+  if (item.status === "completed_harvested") return "Harvested";
+  const phases = item.phases;
+  if (phases?.lightPeriod?.status === "completed") return "Ready for Harvest";
+  if (phases?.lightPeriod?.status === "in_progress") return "Light Period";
+  if (phases?.darkPeriod?.status === "completed") return "Light Period";
+  if (phases?.darkPeriod?.status === "in_progress") return "Dark Period";
+  if (phases?.soaking?.status === "completed") return "Dark Period";
+  if (phases?.soaking?.status === "in_progress") return "Soaking";
+  return "Not Started";
+}
+
+function batchStageClass(stage: string) {
+  if (stage === "Harvested") return "success";
+  if (stage === "Ready for Harvest") return "warning";
+  if (stage === "Light Period") return "primary";
+  if (stage === "Dark Period") return "secondary";
+  if (stage === "Soaking") return "info";
+  return "light";
+}
+
 function BatchList({ batches, loading, onView }: {
   batches: GrowingBatch[];
   loading: boolean;
   onView: (b: GrowingBatch) => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"active" | "closed">("active");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return batches.filter(b =>
-      (status === "all" || b.status === status) &&
-      (!q || [b.batchNumber, b.locationName, ...b.items.map(i => i.productName)].join(" ").toLowerCase().includes(q))
-    );
-  }, [batches, search, status]);
 
-  return <div className="card">
-    <div className="card-header">
-      <div className="row g-2 align-items-center">
-        <div className="col-md-7">
-          <div className="input-group">
-            <span className="input-group-text"><i className="bi bi-search" /></span>
-            <input className="form-control" placeholder="Search batch, microgreen or location..." value={search} onChange={e => setSearch(e.target.value)} />
+  const visibleBatches = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return batches.filter(b => {
+      const isClosed = b.status === "closed";
+      if (activeTab === "closed" && !isClosed) return false;
+      if (activeTab === "active" && isClosed) return false;
+      return (!q || [b.batchNumber, b.locationName, ...b.items.map(i => i.productName)].join(" ").toLowerCase().includes(q)) &&
+        (activeTab === "closed" || status === "all" || b.status === status);
+    });
+  }, [batches, activeTab, search, status]);
+
+  return <>
+    <ul className="nav nav-tabs mb-3">
+      <li className="nav-item">
+        <button className={`nav-link ${activeTab === "active" ? "active" : ""}`} onClick={() => setActiveTab("active")}>
+          <i className="bi bi-activity me-1" />Active Batches
+        </button>
+      </li>
+      <li className="nav-item">
+        <button className={`nav-link ${activeTab === "closed" ? "active" : ""}`} onClick={() => setActiveTab("closed")}>
+          <i className="bi bi-check2-circle me-1" />Closed Batches
+        </button>
+      </li>
+    </ul>
+
+    <div className="card">
+      <div className="card-header">
+        <div className="row g-2 align-items-center">
+          <div className="col-md-7">
+            <div className="input-group">
+              <span className="input-group-text"><i className="bi bi-search" /></span>
+              <input className="form-control" placeholder="Search batch, microgreen or location..." value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
           </div>
+          <div className="col-md-3">
+            {activeTab === "active" ? <select className="form-select" value={status} onChange={e => setStatus(e.target.value)}>
+              <option value="all">All statuses</option>
+              <option value="not_started">Not Started</option>
+              <option value="in_progress">In Progress</option>
+              <option value="completed_harvested">Completed/Harvested</option>
+            </select> : <div className="form-control bg-light">Closed batches</div>}
+          </div>
+          <div className="col-md-2 text-md-end small text-muted">{visibleBatches.length} batches</div>
         </div>
-        <div className="col-md-3">
-          <select className="form-select" value={status} onChange={e => setStatus(e.target.value)}>
-            <option value="all">All statuses</option>
-            <option value="not_started">Not Started</option>
-            <option value="in_progress">In Progress</option>
-            <option value="completed_harvested">Completed/Harvested</option>
-            <option value="closed">Closed</option>
-          </select>
-        </div>
-        <div className="col-md-2 text-md-end small text-muted">{filtered.length} batches</div>
       </div>
+
+      <div className="table-responsive"><table className="table table-hover align-middle mb-0">
+        <thead><tr>
+          <th>Batch</th><th>Microgreens</th><th>Location</th><th>Harvest Date</th><th>Planned</th>
+          {activeTab === "active" && <><th>Sold</th><th>Stage</th></>}
+          <th>Harvested</th><th>Status</th><th className="text-end">Action</th>
+        </tr></thead>
+        <tbody>
+          {visibleBatches.map(batch => {
+            if (activeTab === "closed") {
+              const planned = batch.items.reduce((n, i) => n + Number(i.expectedYieldGrams ?? 0), 0);
+              const sold = batch.items.reduce((n, i) => n + Number(i.soldQuantityGrams ?? 0), 0);
+              const harvested = batch.items.reduce((n, i) => n + Number(i.actualYieldGrams ?? 0), 0);
+              return <tr key={batch.id}>
+                <td><strong>{batch.batchNumber}</strong></td>
+                <td>{batch.items.map(i => <span className="badge text-bg-light me-1" key={i.id}>{i.productName} · {i.trayCount} trays</span>)}</td>
+                <td>{batch.locationName || "—"}</td>
+                <td>{formatDate(batch.harvestDate || batch.startDate)}</td>
+                <td>{planned.toLocaleString()} gms</td>
+                <td>{sold.toLocaleString()} gms</td>
+                <td>{harvested.toLocaleString()} gms</td>
+                <td><span className="badge text-bg-secondary">Closed</span></td>
+                <td className="text-end"><button className="btn btn-sm btn-outline-primary" onClick={() => onView(batch)}>
+                  <i className="bi bi-eye me-1" />View Details
+                </button></td>
+              </tr>;
+            }
+
+            return batch.items.map((item, itemIndex) => {
+              const planned = Number(item.expectedYieldGrams ?? 0);
+              const sold = Number(item.soldQuantityGrams ?? 0);
+              const harvested = Number(item.actualYieldGrams ?? 0);
+              const soldPercent = planned > 0 ? Math.min(100, Math.round((sold / planned) * 100)) : 0;
+              const stage = batchStage(item);
+              return <tr key={`${batch.id}:${item.id}`}>
+                {itemIndex === 0 && <td rowSpan={batch.items.length} className="align-middle"><strong>{batch.batchNumber}</strong></td>}
+                <td><span className="badge text-bg-light">{item.productName} · {item.trayCount} trays</span></td>
+                {itemIndex === 0 && <td rowSpan={batch.items.length} className="align-middle">{batch.locationName || "—"}</td>}
+                {itemIndex === 0 && <td rowSpan={batch.items.length} className="align-middle">{formatDate(batch.harvestDate || batch.startDate)}</td>}
+                <td>{planned.toLocaleString()} gms</td>
+                <td style={{ minWidth: 125 }}>
+                  <div className="fw-semibold">{sold.toLocaleString()} gms</div>
+                  <div className="progress mt-1" style={{ height: 6 }} title={`${soldPercent}% sold`}>
+                    <div className="progress-bar bg-success" style={{ width: `${soldPercent}%` }} />
+                  </div>
+                  <div className="small text-muted mt-1">{soldPercent}%</div>
+                </td>
+                <td><span className={`badge text-bg-${batchStageClass(stage)}`}>{stage}</span></td>
+                <td>{harvested.toLocaleString()} gms</td>
+                {itemIndex === 0 && <td rowSpan={batch.items.length} className="align-middle"><span className={`badge text-bg-${batchStatusClass(batch.status)}`}>{statusLabel(batch.status)}</span></td>}
+                {itemIndex === 0 && <td rowSpan={batch.items.length} className="text-end align-middle"><button className="btn btn-sm btn-outline-primary" onClick={() => onView(batch)}>
+                  <i className="bi bi-eye me-1" />View Status
+                </button></td>}
+              </tr>;
+            });
+          })}
+          {!visibleBatches.length && !loading && <tr><td colSpan={activeTab === "active" ? 10 : 9} className="text-center text-muted py-5"><i className="bi bi-seedling fs-2 d-block mb-2" />No {activeTab} growing batches found.</td></tr>}
+          {loading && <tr><td colSpan={activeTab === "active" ? 10 : 9} className="text-center py-5"><span className="spinner-border spinner-border-sm me-2" />Loading...</td></tr>}
+        </tbody>
+      </table></div>
     </div>
-    <div className="table-responsive"><table className="table table-hover align-middle mb-0">
-      <thead><tr>
-        <th>Batch</th><th>Microgreens</th><th>Location</th><th>Harvest Date</th><th>Expected</th><th>Harvested</th><th>Status</th><th className="text-end">Action</th>
-      </tr></thead>
-      <tbody>
-        {filtered.map(batch => {
-          const expected = batch.items.reduce((n, i) => n + i.expectedYieldGrams, 0);
-          const harvested = batch.items.reduce((n, i) => n + (i.actualYieldGrams ?? 0), 0);
-          return <tr key={batch.id}>
-            <td><strong>{batch.batchNumber}</strong></td>
-            <td>{batch.items.map(i => <span className="badge text-bg-light me-1" key={i.id}>{i.productName} · {i.trayCount} trays</span>)}</td>
-            <td>{batch.locationName || "—"}</td>
-            <td>{formatDate(batch.harvestDate || batch.startDate)}</td>
-            <td>{expected.toLocaleString()} gms</td>
-            <td>{harvested.toLocaleString()} gms</td>
-            <td><span className={`badge text-bg-${batchStatusClass(batch.status)}`}>{statusLabel(batch.status)}</span></td>
-            <td className="text-end"><button className="btn btn-sm btn-outline-primary" onClick={() => onView(batch)}>
-              <i className="bi bi-eye me-1" />View Status
-            </button></td>
-          </tr>;
-        })}
-        {!filtered.length && !loading && <tr><td colSpan={8} className="text-center text-muted py-5"><i className="bi bi-seedling fs-2 d-block mb-2" />No growing batches found.</td></tr>}
-        {loading && <tr><td colSpan={8} className="text-center py-5"><span className="spinner-border spinner-border-sm me-2" />Loading...</td></tr>}
-      </tbody>
-    </table></div>
-  </div>;
+  </>;
 }
 
 function CreateBatch({
@@ -457,7 +531,7 @@ function CreateBatch({
                           <td><input className="form-control form-control-sm" type="number" min="0" step="1" value={trays} onChange={e => updateTray(product.id, Number(e.target.value))} /></td>
                         </tr>;
                       })}
-                      {!rows.length && <tr><td colSpan={8} className="text-center text-muted py-4">No microgreens are ready for growing. Configure Growing Phases and Expected Yield per tray in Microgreen first.</td></tr>}
+                      {!rows.length && <tr><td colSpan={10} className="text-center text-muted py-4">No microgreens are ready for growing. Configure Growing Phases and Expected Yield per tray in Microgreen first.</td></tr>}
                     </tbody>
                   </table></div>
                 </div>
@@ -598,31 +672,21 @@ function BatchDetails({ batch, uid, email, onBack, onSaved, onError }: {
       </div>
       <div className="d-flex gap-2">
         <button className="btn btn-outline-secondary" onClick={onBack}><i className="bi bi-arrow-left me-1" />Back to batches</button>
-        {batch.status === "completed_harvested" && !batch.delivered && <button className="btn btn-outline-primary" onClick={async () => {
-          const ok = await confirmAction({ title: "Close batch?", text: `${batch.batchNumber} will be marked Closed.`, confirmText: "Close Batch" });
-          if (!ok) return;
-          try {
-            await markGrowingBatchDelivered(batch, uid, email);
-            await showSuccess("Batch closed");
-            await onSaved();
-          } catch (err) {
-            await showError(err, "Unable to close batch.");
-          }
-        }}><i className="bi bi-check2-circle me-1" />Close Batch</button>}
       </div>
     </div>
 
     <div className="row g-3 mb-3">
-      <div className="col-md-4"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Expected</div><div className="h4 mb-0">{expected.toLocaleString()} gms</div></div></div></div>
-      <div className="col-md-4"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Actual harvested</div><div className="h4 mb-0">{actual.toLocaleString()} gms</div></div></div></div>
-      <div className="col-md-4"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Batch status</div><div className="h4 mb-0">{statusLabel(batch.status)}</div></div></div></div>
+      <div className="col-md-3"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Expected</div><div className="h4 mb-0">{expected.toLocaleString()} gms</div></div></div></div>
+      <div className="col-md-3"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Actual harvested</div><div className="h4 mb-0">{actual.toLocaleString()} gms</div></div></div></div>
+      <div className="col-md-3"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Sold / handed over</div><div className="h4 mb-0">{batch.items.reduce((n, i) => n + Number(i.soldQuantityGrams ?? 0), 0).toLocaleString()} gms</div></div></div></div>
+      <div className="col-md-3"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Batch status</div><div className="h4 mb-0">{statusLabel(batch.status)}</div></div></div></div>
     </div>
 
     <div className="card">
       <div className="card-header"><h3 className="card-title mb-0">Microgreens Status</h3></div>
       <div className="table-responsive"><table className="table table-hover align-middle mb-0">
         <thead><tr>
-          <th>Microgreen</th><th>Trays</th><th>Soaking</th><th>Dark Period</th><th>Light Period</th><th>Expected</th><th>Actual Loss</th><th>Actual Harvested</th><th>Status</th>
+          <th>Microgreen</th><th>Trays</th><th>Soaking</th><th>Dark Period</th><th>Light Period</th><th>Planned</th><th>Sold</th><th>Actual Loss</th><th>Actual Harvested</th><th>Status</th>
         </tr></thead>
         <tbody>
           {batch.items.map(item => {
@@ -634,7 +698,8 @@ function BatchDetails({ batch, uid, email, onBack, onSaved, onError }: {
               <td><PhaseCell phase={phase?.soaking} canStart={phaseCanStart(item, "soaking")} disabled={savingPhase !== null} onStart={() => updatePhase(item, "soaking", "start")} onEnd={() => updatePhase(item, "soaking", "end")} /></td>
               <td><PhaseCell phase={phase?.darkPeriod} canStart={phaseCanStart(item, "darkPeriod")} disabled={savingPhase !== null} onStart={() => updatePhase(item, "darkPeriod", "start")} onEnd={() => updatePhase(item, "darkPeriod", "end")} /></td>
               <td><PhaseCell phase={phase?.lightPeriod} canStart={phaseCanStart(item, "lightPeriod")} disabled={savingPhase !== null} onStart={() => updatePhase(item, "lightPeriod", "start")} onEnd={() => updatePhase(item, "lightPeriod", "end")} /></td>
-              <td>{item.expectedYieldGrams.toLocaleString()} gms</td>
+              <td>{Number(item.expectedYieldGrams ?? 0).toLocaleString()} gms</td>
+              <td>{Number(item.soldQuantityGrams ?? 0).toLocaleString()} gms</td>
               <td>{loss == null ? "—" : `${loss.toLocaleString()} gms`}</td>
               <td>{item.actualYieldGrams == null ? "—" : `${item.actualYieldGrams.toLocaleString()} gms`}</td>
               <td><span className={`badge text-bg-${item.status === "completed_harvested" ? "success" : item.status === "in_progress" ? "warning" : "secondary"}`}>{item.status === "completed_harvested" ? "Completed/Harvested" : statusLabel(item.status)}</span></td>
