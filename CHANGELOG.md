@@ -2,6 +2,16 @@
 
 This file replaces the previous collection of phase-specific Markdown notes. It keeps the useful historical context without maintaining dozens of competing documentation files.
 
+## Phase 42 — Not Started Growing Batch Editing
+
+- Added an Edit Batch action only for Growing Batches with status `not_started`.
+- Not Started batches can update harvest date, growing location, notes and Microgreen tray quantities.
+- Setting a Microgreen tray quantity to `0` removes that Microgreen from the batch.
+- New Microgreens can be added to a Not Started batch with any valid tray quantity.
+- Editing recalculates the affected batch item production quantities and phase dates from the selected harvest date.
+- Closed, in-progress, and harvested batches cannot be edited.
+- Growing Batch creation workflow remains unchanged.
+
 ## Phase 40 — Current baseline
 
 - Subscription Plan Selling Options use the selected Product's active selling options.

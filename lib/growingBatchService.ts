@@ -78,6 +78,66 @@ export function buildBatchItem(product: Product, harvestDate: string, trayCount:
   };
 }
 
+export async function updateGrowingBatchBeforeStart(data: {
+  batch: GrowingBatch;
+  harvestDate: string;
+  locationId?: string;
+  locationName?: string;
+  notes?: string;
+  items: Array<{ product: Product; trayCount: number; existingItemId?: string }>;
+  uid: string;
+  email?: string;
+}) {
+  if (!data.harvestDate) throw new Error("Harvest date is required.");
+  if (data.batch.status !== "not_started" || data.batch.delivered || data.batch.status === "closed") {
+    throw new Error("Only a Not Started batch can be edited.");
+  }
+
+  const normalizedItems = data.items
+    .map(row => ({ ...row, trayCount: Math.round(Number(row.trayCount || 0)) }))
+    .filter(row => row.trayCount > 0);
+  if (!normalizedItems.length) throw new Error("Add at least one microgreen to the batch.");
+
+  const batchRef = doc(db, "growingBatches", data.batch.id);
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(batchRef);
+    if (!snapshot.exists()) throw new Error("Growing batch no longer exists.");
+    const latest = { id: snapshot.id, ...(snapshot.data() as Omit<GrowingBatch, "id">) };
+    if (latest.status !== "not_started" || latest.delivered || latest.status === "closed") {
+      throw new Error("Only a Not Started batch can be edited. Refresh and try again.");
+    }
+
+    const oldByProduct = new Map((latest.items ?? []).map(item => [item.productId, item]));
+    const usedIds = new Set<string>();
+    const items = normalizedItems.map((row, index) => {
+      const built = buildBatchItem(row.product, data.harvestDate, row.trayCount);
+      const existing = row.existingItemId ? oldByProduct.get(row.product.id) : undefined;
+      let itemId = existing?.id;
+      if (!itemId || usedIds.has(itemId)) {
+        itemId = `${latest.id}-${index + 1}`;
+        let suffix = 1;
+        while (usedIds.has(itemId)) itemId = `${latest.id}-${index + 1}-${suffix++}`;
+      }
+      usedIds.add(itemId);
+      return { ...built, id: itemId };
+    });
+    const startDate = items.map(item => item.startDate).sort()[0] || data.harvestDate;
+
+    transaction.update(batchRef, {
+      harvestDate: data.harvestDate,
+      startDate,
+      locationId: data.locationId ?? "",
+      locationName: data.locationName ?? "",
+      notes: data.notes?.trim() || "",
+      items,
+      status: "not_started" as GrowingBatchStatus,
+      updatedAt: serverTimestamp(),
+    });
+  });
+
+  await auditEvent("update", "growingBatches", data.batch.id, `Updated Not Started growing batch ${data.batch.batchNumber}`);
+}
+
 export async function createGrowingBatch(data: {
   batchNumber: string;
   harvestDate: string;

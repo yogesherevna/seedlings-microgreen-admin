@@ -12,6 +12,7 @@ import {
   calculateGrowingPhaseDates,
   createGrowingBatch,
   harvestGrowingBatchItem,
+  updateGrowingBatchBeforeStart,
 } from "@/lib/growingBatchService";
 import { confirmAction, showError, showSuccess } from "@/lib/alerts";
 import type { Product } from "@/types/catalog";
@@ -236,6 +237,8 @@ export default function GrowingBatchesPage() {
     />}
     {tab === "view" && selected && user && <BatchDetails
       batch={selected}
+      products={products}
+      locations={locations}
       uid={user.uid}
       email={user.email ?? undefined}
       onBack={() => setTab("list")}
@@ -585,8 +588,10 @@ function PhaseCell({
   </div>;
 }
 
-function BatchDetails({ batch, uid, email, onBack, onSaved, onError }: {
+function BatchDetails({ batch, products, locations, uid, email, onBack, onSaved, onError }: {
   batch: GrowingBatch;
+  products: Product[];
+  locations: Location[];
   uid: string;
   email?: string;
   onBack: () => void;
@@ -596,6 +601,12 @@ function BatchDetails({ batch, uid, email, onBack, onSaved, onError }: {
   const [harvestValues, setHarvestValues] = useState<Record<string, number>>({});
   const [harvesting, setHarvesting] = useState(false);
   const [savingPhase, setSavingPhase] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editHarvestDate, setEditHarvestDate] = useState(batch.harvestDate || batch.startDate || today());
+  const [editLocationId, setEditLocationId] = useState(batch.locationId || "");
+  const [editNotes, setEditNotes] = useState(batch.notes || "");
+  const [editTrays, setEditTrays] = useState<Record<string, number>>(() => Object.fromEntries(batch.items.map(i => [i.productId, Number(i.trayCount || 0)])));
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const expected = batch.items.reduce((n, i) => n + i.expectedYieldGrams, 0);
   const actual = batch.items.reduce((n, i) => n + (i.actualYieldGrams ?? 0), 0);
@@ -663,6 +674,37 @@ function BatchDetails({ batch, uid, email, onBack, onSaved, onError }: {
 
   const harvestingOpen = Object.keys(harvestValues).length > 0;
 
+  function openEdit() {
+    if (batch.status !== "not_started" || batch.delivered) return;
+    setEditHarvestDate(batch.harvestDate || batch.startDate || today());
+    setEditLocationId(batch.locationId || "");
+    setEditNotes(batch.notes || "");
+    setEditTrays(Object.fromEntries(batch.items.map(i => [i.productId, Number(i.trayCount || 0)])));
+    setEditing(true);
+    onError("");
+  }
+
+  async function saveEdit() {
+    onError("");
+    const rows = products
+      .map(product => ({ product, trayCount: Math.max(0, Math.round(Number(editTrays[product.id] ?? 0))), existingItemId: batch.items.find(i => i.productId === product.id)?.id }))
+      .filter(row => row.trayCount > 0);
+    if (!rows.length) return onError("Add at least one microgreen to the batch.");
+    if (!editLocationId) return onError("Select a growing location.");
+    setSavingEdit(true);
+    try {
+      const location = locations.find(l => l.id === editLocationId);
+      await updateGrowingBatchBeforeStart({ batch, harvestDate: editHarvestDate, locationId: editLocationId, locationName: location?.name || "", notes: editNotes, items: rows, uid, email });
+      setEditing(false);
+      await showSuccess(`Batch ${batch.batchNumber} updated.`);
+      await onSaved();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Unable to update growing batch.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
   return <>
     <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
       <div>
@@ -671,9 +713,33 @@ function BatchDetails({ batch, uid, email, onBack, onSaved, onError }: {
         <div className="mt-2"><span className={`badge text-bg-${batchStatusClass(batch.status)}`}>{statusLabel(batch.status)}</span></div>
       </div>
       <div className="d-flex gap-2">
+        {batch.status === "not_started" && !batch.delivered && <button className="btn btn-outline-primary" onClick={openEdit} disabled={editing || savingEdit}>
+          <i className="bi bi-pencil me-1" />Edit Batch
+        </button>}
         <button className="btn btn-outline-secondary" onClick={onBack}><i className="bi bi-arrow-left me-1" />Back to batches</button>
       </div>
     </div>
+
+    {editing && <div className="card border-primary mb-3">
+      <div className="card-header"><h3 className="card-title mb-0">Edit Growing Batch</h3></div>
+      <div className="card-body">
+        <div className="row g-3 mb-3">
+          <div className="col-md-4"><label className="form-label">Harvest Date *</label><input type="date" className="form-control" value={editHarvestDate} onChange={e => setEditHarvestDate(e.target.value)} /></div>
+          <div className="col-md-4"><label className="form-label">Growing Location *</label><select className="form-select" value={editLocationId} onChange={e => setEditLocationId(e.target.value)}><option value="">Select location</option>{locations.filter(l => l.active).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select></div>
+          <div className="col-md-4"><label className="form-label">Notes</label><input className="form-control" value={editNotes} onChange={e => setEditNotes(e.target.value)} /></div>
+        </div>
+        <div className="table-responsive">
+          <table className="table table-sm align-middle mb-0"><thead><tr><th>Microgreen</th><th>Current Trays</th><th style={{ width: 180 }}>Update Trays</th></tr></thead><tbody>
+            {products.filter(p => p.status !== "inactive" && p.growingActive !== false && Number(p.growingCycleDays ?? 0) > 0 && Number(p.expectedYieldGramsPerTray ?? p.expectedYieldGramsPerBatch ?? 0) > 0).map(product => {
+              const current = batch.items.find(i => i.productId === product.id)?.trayCount ?? 0;
+              const value = Number(editTrays[product.id] ?? 0);
+              return <tr key={product.id}><td><strong>{product.name}</strong></td><td>{current}</td><td><input className="form-control" type="number" min="0" step="1" value={value} onChange={e => setEditTrays(prev => ({ ...prev, [product.id]: Math.max(0, Math.round(Number(e.target.value || 0))) }))} /><div className="form-text">Set 0 to remove from batch.</div></td></tr>;
+            })}
+          </tbody></table>
+        </div>
+      </div>
+      <div className="card-footer d-flex justify-content-end gap-2"><button className="btn btn-secondary" disabled={savingEdit} onClick={() => setEditing(false)}>Cancel</button><button className="btn btn-primary" disabled={savingEdit} onClick={() => void saveEdit()}>{savingEdit ? "Saving..." : "Save Changes"}</button></div>
+    </div>}
 
     <div className="row g-3 mb-3">
       <div className="col-md-3"><div className="card seedlings-kpi-card h-100"><div className="card-body"><div className="text-muted small">Expected</div><div className="h4 mb-0">{expected.toLocaleString()} gms</div></div></div></div>
